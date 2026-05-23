@@ -1,0 +1,287 @@
+<canvas id="cvs" width="900" height="600"></canvas>
+<style>
+  body {
+    margin: 0;
+    overflow: hidden;
+  }
+</style>
+<script>
+  const canvas = document.getElementById("cvs");
+  const ctx = canvas.getContext("2d");
+
+  const gravity = 0.5;
+  const damping = 0.96;
+
+  class Point {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      this.oldX = x;
+      this.oldY = y;
+      this.locked = false;
+    }
+
+    update() {
+      if (this.locked) return;
+
+      let vx = (this.x - this.oldX) * damping;
+      let vy = (this.y - this.oldY) * damping;
+
+      this.oldX = this.x;
+      this.oldY = this.y;
+
+      this.x += vx;
+      this.y += vy + gravity;
+
+      // 頂部
+      if (this.y < 0) {
+        this.y = 0;
+        this.oldY = this.y + vy * -0.85;
+      }
+
+      // 地板
+      if (this.y > canvas.height) {
+        this.y = canvas.height;
+        this.oldY = this.y + vy * -0.85;
+      }
+
+      // 左右牆
+      if (this.x < 0) {
+        this.x = 0;
+        this.oldX = this.x + vx * -0.85;
+      }
+
+      if (this.x > canvas.width) {
+        this.x = canvas.width;
+        this.oldX = this.x + vx * -0.85;
+      }
+    }
+
+    draw() {
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, 8, 0, Math.PI * 2);
+      ctx.fillStyle = this.locked ? "orange" : "red";
+      ctx.fill();
+    }
+  }
+
+  // 正方形
+  const o_points = [new Point(-50, -50), new Point(50, -50), new Point(50, 50), new Point(-50, 50)];
+  const points = [new Point(300, 100), new Point(400, 100), new Point(400, 200), new Point(300, 200)];
+
+  // (springs 已移除，改用 points 對 transformedOriginal 的彈性約束)
+
+  function getCentroid(items) {
+    const sum = items.reduce(
+      (acc, p) => {
+        acc.x += p.x;
+        acc.y += p.y;
+        return acc;
+      },
+      { x: 0, y: 0 },
+    );
+    return { x: sum.x / items.length, y: sum.y / items.length };
+  }
+
+  function getAverageAngle(items) {
+    const center = getCentroid(items);
+    let sinSum = 0;
+    let cosSum = 0;
+
+    items.forEach((p) => {
+      const angle = Math.atan2(p.y - center.y, p.x - center.x);
+      sinSum += Math.sin(angle);
+      cosSum += Math.cos(angle);
+    });
+
+    return Math.atan2(sinSum, cosSum);
+  }
+
+  function rotatePoints(items, angle, center = { x: 0, y: 0 }) {
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    return items.map((p) => ({
+      x: center.x + (p.x - center.x) * cos - (p.y - center.y) * sin,
+      y: center.y + (p.x - center.x) * sin + (p.y - center.y) * cos,
+    }));
+  }
+
+  function getTransformedOriginalPoints(position) {
+    const center = getCentroid(o_points);
+    const move = {
+      x: position.x - center.x,
+      y: position.y - center.y,
+    };
+    return o_points.map((p) => ({ x: p.x + move.x, y: p.y + move.y }));
+  }
+
+  function drawOriginalShape(transformedPoints) {
+    ctx.beginPath();
+    ctx.moveTo(transformedPoints[0].x, transformedPoints[0].y);
+    for (let i = 1; i < transformedPoints.length; i++) {
+      ctx.lineTo(transformedPoints[i].x, transformedPoints[i].y);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = "rgba(255, 50, 50, 0.8)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  function angleBetween(v1, v2) {
+    const dot = v1.x * v2.x + v1.y * v2.y;
+    const det = v1.x * v2.y - v1.y * v2.x;
+    return Math.atan2(det, dot);
+  }
+
+  function getPointAngleDegrees(center, originalPoints, dynamicPoints) {
+    return originalPoints.map((orig, i) => {
+      const dyn = dynamicPoints[i];
+      const vOrig = { x: orig.x - center.x, y: orig.y - center.y };
+      const vDyn = { x: dyn.x - center.x, y: dyn.y - center.y };
+      const angle = angleBetween(vOrig, vDyn);
+      return angle * (180 / Math.PI);
+    });
+  }
+
+  function drawAngleLabels(center, dynamicPoints, degrees) {
+    ctx.fillStyle = "rgba(0, 0, 0, 0.9)";
+    ctx.font = "14px sans-serif";
+
+    dynamicPoints.forEach((dyn, i) => {
+      ctx.fillText(`${degrees[i].toFixed(1)}°`, dyn.x + 12, dyn.y + 6);
+    });
+  }
+
+  // 循環平均（將角度視為向量平均以處理 0/360 斷點）
+  function averageDegreesCircular(degArray) {
+    let sinSum = 0;
+    let cosSum = 0;
+    degArray.forEach((d) => {
+      const rad = (d * Math.PI) / 180;
+      sinSum += Math.sin(rad);
+      cosSum += Math.cos(rad);
+    });
+    let avgRad = Math.atan2(sinSum, cosSum);
+    if (avgRad < 0) avgRad += Math.PI * 2;
+    return (avgRad * 180) / Math.PI;
+  }
+
+  // 將每個 point 彈性拉向對應的 transformed target（不移動 target）
+  function applyPointTargetSprings(pointsArr, targetsArr, k = 0.2, iterations = 3) {
+    for (let it = 0; it < iterations; it++) {
+      for (let i = 0; i < Math.min(pointsArr.length, targetsArr.length); i++) {
+        const p = pointsArr[i];
+        const t = targetsArr[i];
+        if (!p || !t) continue;
+        const dx = t.x - p.x;
+        const dy = t.y - p.y;
+        p.x += dx * k;
+        p.y += dy * k;
+      }
+    }
+  }
+
+  // ===== 滑鼠拖曳 =====
+
+  let dragging = null;
+  const mouse = { x: 0, y: 0 };
+
+  canvas.addEventListener("mousedown", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    mouse.x = mx;
+    mouse.y = my;
+
+    for (const p of points) {
+      const d = Math.hypot(mx - p.x, my - p.y);
+      if (d < 15) {
+        dragging = p;
+        p.locked = true;
+        break;
+      }
+    }
+  });
+
+  canvas.addEventListener("mousemove", (e) => {
+    if (!dragging) return;
+
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = e.clientX - rect.left;
+    mouse.y = e.clientY - rect.top;
+  });
+
+  canvas.addEventListener("mouseup", () => {
+    if (dragging) {
+      dragging.locked = false;
+      dragging = null;
+    }
+  });
+
+  // ===== 畫圖 =====
+
+  function drawShape() {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(points[i].x, points[i].y);
+    }
+
+    ctx.closePath();
+    ctx.fillStyle = "rgba(0,150,255,0.3)";
+    ctx.fill();
+    ctx.stroke();
+  }
+
+  function animate() {
+    ctx.fillStyle = "#c0c0c0";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    points.forEach((p) => p.update());
+
+    // 原本的內部彈簧已移除，已改以 points→transformedOriginalAfter 的彈性約束
+
+    const dynamicCenter = getCentroid(points);
+    const transformedOriginal = getTransformedOriginalPoints(dynamicCenter);
+    const angleDegrees = getPointAngleDegrees(dynamicCenter, transformedOriginal, points);
+    // 顯示每個點的角度（0-360）
+    // drawAngleLabels(dynamicCenter, points, angleDegrees);
+    // 用向量平均處理循環角度再轉回度數
+    const angleAvg = averageDegreesCircular(angleDegrees);
+    const angleAvgRad = (angleAvg * Math.PI) / 180;
+    const transformedOriginalAfter = rotatePoints(transformedOriginal, angleAvgRad, dynamicCenter);
+    // 對每個 point 加上朝向 transformedOriginalAfter 的彈性約束
+    applyPointTargetSprings(points, transformedOriginalAfter, 0.04, 4);
+    // drawOriginalShape(transformedOriginalAfter);
+    if (dragging && Math.hypot(mouse.x - dragging.x, mouse.y - dragging.y) > 0) {
+      dragging.x = mouse.x;
+      dragging.y = mouse.y;
+      dragging.oldX = dragging.x;
+      dragging.oldY = dragging.y;
+    }
+
+    /*ctx.beginPath();
+    ctx.arc(transformedOriginalAfter[0].x, transformedOriginalAfter[0].y, 10, 0, Math.PI * 2);
+    ctx.strokeStyle = "blue";
+    ctx.lineWidth = 3;
+    ctx.stroke();*/
+
+    drawShape();
+    points.forEach((p) => p.draw());
+
+    /*ctx.fillStyle = "rgba(0, 0, 0, 1)";
+    ctx.font = "16px sans-serif";
+    ctx.fillText(`angleAvg: ${angleAvg.toFixed(1)}°`, dynamicCenter.x + 10, dynamicCenter.y + 30);
+
+    ctx.beginPath();
+    ctx.arc(points[0].x, points[0].y, 12, 0, Math.PI * 2);
+    ctx.strokeStyle = "orange";
+    ctx.lineWidth = 3;
+    ctx.stroke();*/
+
+    requestAnimationFrame(animate);
+  }
+
+  animate();
+</script>
