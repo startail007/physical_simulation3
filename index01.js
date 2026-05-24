@@ -1,0 +1,233 @@
+import { Vector, VectorE } from "./lib/Vector.js";
+const canvas = document.getElementById("cvs");
+const ctx = canvas.getContext("2d");
+
+const gravity = [0, 0.5];
+const damping = 0.96;
+
+const applyPointTargetSpring = (p, t, k) => {
+  VectorE.add(p, Vector.scale(Vector.sub(t, p), k));
+};
+
+const getCentroid = (items) => {
+  const sum = items.reduce(
+    (acc, p) => {
+      VectorE.add(acc, p);
+      return acc;
+    },
+    [0, 0],
+  );
+  return Vector.scale(sum, 1 / items.length);
+};
+
+const rotatePoints = (items, angle, center = [0, 0]) => {
+  return items.map((p) => Vector.add(center, Vector.rotate(Vector.sub(p, center), angle)));
+};
+
+const angleBetween = (v1, v2) => {
+  const dot = Vector.dot(v1, v2);
+  const det = Vector.det(v1, v2);
+  return Math.atan2(det, dot);
+};
+
+const getPointAngleDegrees = (center, originalPoints, dynamicPoints) => {
+  return originalPoints.map((orig, i) => {
+    const vOrig = Vector.sub(orig, center);
+    const vDyn = Vector.sub(dynamicPoints[i], center);
+    return angleBetween(vOrig, vDyn);
+  });
+};
+
+const averageDegreesCircular = (degArray) => {
+  let sinSum = 0;
+  let cosSum = 0;
+  degArray.forEach((rad) => {
+    sinSum += Math.sin(rad);
+    cosSum += Math.cos(rad);
+  });
+  return Math.atan2(sinSum, cosSum);
+};
+
+class SoftPoint {
+  constructor(pos) {
+    this.pos = pos;
+    this.force = Vector.zero();
+    this.linearVel = Vector.zero();
+  }
+  update(dt) {
+    VectorE.add(this.linearVel, Vector.scale(this.force, dt));
+    VectorE.add(this.pos, Vector.scale(this.linearVel, dt));
+    VectorE.scale(this.linearVel, damping);
+    this.force = Vector.zero();
+  }
+  addForce(amount) {
+    VectorE.add(this.force, amount);
+  }
+}
+
+class SoftPolygon {
+  locked = -1;
+  constructor(points) {
+    this.points = points;
+    this.softPoints = points.map((el) => new SoftPoint(el));
+    this.oldPoints = points.map((el) => Vector.clone(el));
+    const center = this.center;
+    this.oPoints = points.map((el) => Vector.sub(el, center));
+  }
+  get center() {
+    return getCentroid(this.points);
+  }
+  update() {
+    this.points.forEach((p, i) => {
+      const oldP = this.oldPoints[i];
+      const v = Vector.scale(Vector.sub(p, oldP), damping);
+      VectorE.set(oldP, p);
+      VectorE.add(p, Vector.add(v, gravity));
+      if (p[1] < 0) {
+        p[1] = 0;
+        oldP[1] = p[1] + v[1] * -0.85;
+      }
+      if (p[1] > canvas.height) {
+        p[1] = canvas.height;
+        oldP[1] = p[1] + v[1] * -0.85;
+      }
+      if (p[0] < 0) {
+        p[0] = 0;
+        oldP[0] = p[0] + v[0] * -0.85;
+      }
+      if (p[0] > canvas.width) {
+        p[0] = canvas.width;
+        oldP[0] = p[0] + v[0] * -0.85;
+      }
+    });
+    const center = this.center;
+    let transformedOriginal = this.oPoints.map((p) => Vector.add(p, center));
+    const angleDegrees = getPointAngleDegrees(this.center, transformedOriginal, this.points);
+    const angleAvg = averageDegreesCircular(angleDegrees);
+    transformedOriginal = rotatePoints(transformedOriginal, angleAvg, this.center);
+    this.debugPoints(transformedOriginal);
+    this.points.forEach((p, i) => {
+      applyPointTargetSpring(p, transformedOriginal[i], 0.06);
+    });
+  }
+  debugPoints(points) {
+    ctx.strokeStyle = "rgb(255,0,0)";
+    ctx.beginPath();
+    ctx.moveTo(...points[0]);
+    for (let i = 1; i < points.length; i++) {
+      ctx.lineTo(...points[i]);
+    }
+    ctx.closePath();
+    ctx.stroke();
+  }
+  drawShape() {
+    ctx.strokeStyle = "rgb(0,0,0)";
+    ctx.beginPath();
+    ctx.moveTo(...this.points[0]);
+    for (let i = 1; i < this.points.length; i++) {
+      ctx.lineTo(...this.points[i]);
+    }
+    ctx.closePath();
+    ctx.fillStyle = "rgba(0,150,255,0.3)";
+    ctx.fill();
+    ctx.stroke();
+    this.points.forEach((p, i) => {
+      ctx.beginPath();
+      ctx.arc(...p, 8, 0, Math.PI * 2);
+      ctx.fillStyle = this.locked === i ? "orange" : "red";
+      ctx.fill();
+    });
+  }
+}
+
+const polygons = [
+  new SoftPolygon([
+    [300, 100],
+    [400, 100],
+    [400, 200],
+    [300, 200],
+  ]),
+  new SoftPolygon([
+    [300, 100],
+    [400, 100],
+    [400, 200],
+  ]),
+  new SoftPolygon([
+    [400, 100],
+    [500, 100],
+    [500, 200],
+    [400, 200],
+  ]),
+  new SoftPolygon([
+    [500, 100],
+    [600, 100],
+    [600, 200],
+    [500, 200],
+  ]),
+];
+
+let dragging = null;
+const mouse = [0, 0];
+const oldMouse = [0, 0];
+
+const mousemove = (e) => {
+  if (!dragging) return;
+  const rect = canvas.getBoundingClientRect();
+  VectorE.set(mouse, [e.clientX - rect.left, e.clientY - rect.top]);
+};
+const mouseup = () => {
+  if (!dragging) return;
+  const v = Vector.sub(mouse, oldMouse);
+  // VectorE.set(dragging.oldPoints[dragging.locked], Vector.sub(dragging.points[dragging.locked], v));
+  dragging.points.forEach((point, i) => {
+    const len = Vector.length(Vector.sub(point, dragging.points[dragging.locked]));
+    const rate = (200 - Math.min(len, 200)) / 200;
+    VectorE.set(dragging.oldPoints[i], Vector.sub(point, Vector.scale(v, 0.25 + 0.75 * rate * rate)));
+  });
+  dragging.locked = -1;
+  dragging = null;
+  window.removeEventListener("mousemove", mousemove);
+  window.removeEventListener("mouseup", mouseup);
+};
+const mousedown = (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const m = [e.clientX - rect.left, e.clientY - rect.top];
+  VectorE.set(mouse, m);
+  VectorE.set(oldMouse, m);
+
+  foo: for (const polygon of polygons) {
+    for (let i = 0; i < polygon.points.length; i++) {
+      const p = polygon.points[i];
+      const d = Vector.length(Vector.sub(m, p));
+      if (d < 8) {
+        dragging = polygon;
+        dragging.locked = i;
+        break foo;
+      }
+    }
+  }
+  window.addEventListener("mousemove", mousemove);
+  window.addEventListener("mouseup", mouseup);
+};
+canvas.addEventListener("mousedown", mousedown);
+
+function animate(dt) {
+  ctx.fillStyle = "#c0c0c0";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  for (const polygon of polygons) {
+    polygon.update();
+    polygon.drawShape();
+  }
+  if (dragging) {
+    const pos = dragging.points[dragging.locked];
+    const oldPos = dragging.oldPoints[dragging.locked];
+    if (dragging && Vector.length(Vector.sub(mouse, pos)) > 0) {
+      VectorE.set(pos, mouse);
+      VectorE.set(oldPos, pos);
+      VectorE.add(oldMouse, Vector.scale(Vector.sub(mouse, oldMouse), 0.1));
+    }
+  }
+  requestAnimationFrame(animate);
+}
+
+animate();
