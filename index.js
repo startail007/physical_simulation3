@@ -253,63 +253,32 @@ canvas.addEventListener("mousedown", mousedown);
  * 处理两个多边形之间的碰撞推挤
  */
 const resolvePolygons = (polyA, polyB) => {
-  //const radius = 8; // 与 drawShape 中的绘制半径一致
+  const hit = Polygon.intersectPolygons(
+    polyA.softPoints.map((el) => el.pos),
+    polyB.softPoints.map((el) => el.pos),
+  );
+  if (!hit) return;
 
-  const resolvePointToEdges = (p, poly) => {
-    for (let i = 0; i < poly.softPoints.length; i++) {
-      const e1 = poly.softPoints[i];
-      const e2 = poly.softPoints[(i + 1) % poly.softPoints.length];
+  const { normal, depth } = hit;
+  const separation = Vector.scale(normal, depth * 0.5);
 
-      const edge = Vector.sub(e2.pos, e1.pos);
-      const edgeLenSq = Vector.dot(edge, edge);
-      if (edgeLenSq === 0) continue;
+  // 位置分離：A 往反方向移動，B 往正方向移動
+  polyA.softPoints.forEach((p) => VectorE.sub(p.pos, separation));
+  polyB.softPoints.forEach((p) => VectorE.add(p.pos, separation));
 
-      // 計算點 p 在線段 (e1, e2) 上的投影參數 t
-      let t = Vector.dot(Vector.sub(p.pos, e1.pos), edge) / edgeLenSq;
-      t = Math.max(0, Math.min(1, t)); // 限制在線段內
-
-      // 找到線段上最近的點 Q
-      const closest = Vector.add(e1.pos, Vector.scale(edge, t));
-      const diff = Vector.sub(p.pos, closest);
-      const dist = Vector.length(diff);
-
-      //if (dist < radius && dist > 0) {
-        const n = Vector.scale(diff, 1 / dist); // 碰撞法線
-        const overlap = /*radius*/ - dist;
-        const pushMag = overlap * 0.5;
-        const push = Vector.scale(n, pushMag);
-
-        // 1. 位置修正
-        VectorE.add(p.pos, push);
-        // 反作用力根據 t 分配給邊的兩個端點
-        VectorE.sub(e1.pos, Vector.scale(push, 1 - t));
-        VectorE.sub(e2.pos, Vector.scale(push, t));
-
-        // 2. 速度修正 (線性阻尼與衝量)
-        // 取得邊在該點的插值速度
-        const edgeVel = Vector.add(Vector.scale(e1.linearVel, 1 - t), Vector.scale(e2.linearVel, t));
-        const relativeVel = Vector.sub(p.linearVel, edgeVel);
-        const sepVel = Vector.dot(relativeVel, n);
-
-        if (sepVel < 0) {
-          const impulse = Vector.scale(n, sepVel * 0.5);
-          VectorE.sub(p.linearVel, impulse);
-          VectorE.add(e1.linearVel, Vector.scale(impulse, 1 - t));
-          VectorE.add(e2.linearVel, Vector.scale(impulse, t));
-        }
-      //}
+  // 速度阻尼：沿法線方向減少接近速度
+  polyA.softPoints.forEach((p) => {
+    const relVel = Vector.dot(p.linearVel, normal);
+    if (relVel > 0) {
+      VectorE.sub(p.linearVel, Vector.scale(normal, relVel * 0.5));
     }
-  };
-  if (
-    !Polygon.intersectPolygons(
-      polyA.softPoints.map((el) => el.pos),
-      polyB.softPoints.map((el) => el.pos),
-    )
-  )
-    return;
-  // 雙向檢測：A 的點對 B 的邊，以及 B 的點對 A 的邊
-  for (const p of polyA.softPoints) resolvePointToEdges(p, polyB);
-  for (const p of polyB.softPoints) resolvePointToEdges(p, polyA);
+  });
+  polyB.softPoints.forEach((p) => {
+    const relVel = Vector.dot(p.linearVel, normal);
+    if (relVel < 0) {
+      VectorE.sub(p.linearVel, Vector.scale(normal, relVel * 0.5));
+    }
+  });
 };
 
 function animate(dt) {
